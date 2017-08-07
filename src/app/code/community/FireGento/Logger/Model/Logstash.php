@@ -106,8 +106,10 @@ class FireGento_Logger_Model_Logstash extends Zend_Log_Writer_Abstract
         $fields['RemoteAddress'] = $event->getRemoteAddress();
         $fields['HttpHost'] = Mage::app()->getRequest()->getHttpHost();
         $fields['LogFileName'] = $this->_logFileName;
-        $fields['SessionId'] = Mage::getSingleton("core/session")->getEncryptedSessionId();
-        $fields['CustomerId'] = Mage::getSingleton('customer/session')->getCustomerId(); 
+        if (isset($_SESSION)) {
+            $fields['SessionId'] = Mage::getSingleton("core/session")->getEncryptedSessionId();
+            $fields['CustomerId'] = Mage::getSingleton('customer/session')->getCustomerId();
+        }
 
         // udp/tcp inputs require a trailing EOL character.
         $encodedMessage = trim(json_encode($fields)) . "\n";
