@@ -10,8 +10,6 @@
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
  * FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
  *
- * PHP version 5
- *
  * @category  FireGento
  * @package   FireGento_Logger
  * @author    FireGento Team <team@firegento.com>

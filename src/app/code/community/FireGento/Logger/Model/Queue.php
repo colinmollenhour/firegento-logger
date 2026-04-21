@@ -10,8 +10,6 @@
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
  * FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
  *
- * PHP version 5
- *
  * @category  FireGento
  * @package   FireGento_Logger
  * @author    FireGento Team <team@firegento.com>
@@ -44,6 +42,16 @@ class FireGento_Logger_Model_Queue extends Zend_Log_Writer_Abstract
     protected $_useQueue;
 
     /**
+     * Target filename this writer was constructed with. Retained so the
+     * last-resort fallback can write the raw event directly when the
+     * regular logging pipeline throws (e.g. `getStoreConfig` before stores
+     * are loaded, during early DB-init failures).
+     *
+     * @var string
+     */
+    protected $_filename;
+
+    /**
      * @var FireGento_Logger_Formatter_Advanced
      */
     protected static $_advancedFormatter;
@@ -60,6 +68,8 @@ class FireGento_Logger_Model_Queue extends Zend_Log_Writer_Abstract
      */
     public function __construct($filename)
     {
+        $this->_filename = $filename;
+
         /** @var $helper FireGento_Logger_Helper_Data */
         $helper = Mage::helper('firegento_logger');;
 
@@ -100,36 +110,83 @@ class FireGento_Logger_Model_Queue extends Zend_Log_Writer_Abstract
      */
     protected function _write($event)
     {
-        // Check if module is disabled only if there are disabled modules
-        if (Mage::getStoreConfig('dev/log/disabled_modules')) {
-            $backtrace = debug_backtrace();
-            array_shift($backtrace);
-            array_shift($backtrace);
-            array_shift($backtrace);
-            $file = $backtrace[0]['file'];
-            $moduleDir = $file;
-            // The way this works is it sifts backwards through the log to find which module called this log.
-            $codeStart = stripos($file, DS.'code'.DS);
-            $moduleDir = substr($moduleDir, $codeStart +strlen(DS.'code'.DS));
-            $moduleDir = str_ireplace(['core' . DS, 'community' . DS, 'local' . DS], '', $moduleDir);
-            $endIndex = stripos($moduleDir, DS, stripos($moduleDir, DS)+1);
-            $moduleKey = str_replace(DS, "_", substr($moduleDir, 0, $endIndex));
-            if (!Mage::getSingleton('firegento_logger/manager')->isEnabled($moduleKey)) {
-                return;
+        try {
+            // Check if module is disabled only if there are disabled modules.
+            // Wrapped because getStoreConfig throws Mage_Core_Model_Store_Exception
+            // when called before stores are loaded — e.g. when we're *logging* an
+            // exception that happened during App/DB bootstrap. In that case we
+            // want to skip the gate and still log, not cascade into a fatal.
+            $disabledModules = null;
+            try {
+                $disabledModules = Mage::getStoreConfig('dev/log/disabled_modules');
+            } catch (\Throwable $e) {
+                // Stores not loaded; no per-module filtering possible. Proceed.
             }
-        }
-
-        /** @var $event FireGento_Logger_Model_Event */
-        $event = Mage::helper('firegento_logger')->getEventObjectFromArray($event);
-
-        if ($this->_useQueue) {
-            // if queue is enabled then add to internal cache
-            $this->_loggerCache[] = $event;
-        } else {
-            foreach ($this->_writers as $writer) {
-                $writer->write($event);
+            if ($disabledModules) {
+                $backtrace = debug_backtrace();
+                array_shift($backtrace);
+                array_shift($backtrace);
+                array_shift($backtrace);
+                $file = $backtrace[0]['file'];
+                $moduleDir = $file;
+                // The way this works is it sifts backwards through the log to find which module called this log.
+                $codeStart = stripos($file, DS.'code'.DS);
+                $moduleDir = substr($moduleDir, $codeStart +strlen(DS.'code'.DS));
+                $moduleDir = str_ireplace(['core' . DS, 'community' . DS, 'local' . DS], '', $moduleDir);
+                $endIndex = stripos($moduleDir, DS, stripos($moduleDir, DS)+1);
+                $moduleKey = str_replace(DS, "_", substr($moduleDir, 0, $endIndex));
+                if (!Mage::getSingleton('firegento_logger/manager')->isEnabled($moduleKey)) {
+                    return;
+                }
             }
+
+            /** @var FireGento_Logger_Model_Event $eventObject */
+            $eventObject = Mage::helper('firegento_logger')->getEventObjectFromArray($event);
+
+            if ($this->_useQueue) {
+                // if queue is enabled then add to internal cache
+                $this->_loggerCache[] = $eventObject;
+            } else {
+                foreach ($this->_writers as $writer) {
+                    $writer->write($eventObject);
+                }
+            }
+        } catch (\Throwable $e) {
+            // Last-resort fallback: something in the logger pipeline itself
+            // threw (config not loaded, helper init failed, writer exploded,
+            // …). We don't want to swallow the event — write the raw message
+            // straight to the target file so the original error that we were
+            // trying to log isn't lost.
+            $this->_writeRawEventFallback($event, $e);
         }
+    }
+
+    /**
+     * Append the raw event to the target log file with a minimal format.
+     * Called when the normal _write path throws so we don't lose the
+     * original log entry (often the cause of the throw is earlier in the
+     * request lifecycle and that exception is what matters).
+     */
+    private function _writeRawEventFallback(array $event, \Throwable $loggerError): void
+    {
+        if ( ! $this->_filename) {
+            return;
+        }
+        $timestamp = $event['timestamp'] ?? date('c');
+        $priority  = $event['priorityName'] ?? ($event['priority'] ?? '?');
+        $message   = $event['message'] ?? '';
+        $line = sprintf(
+            "%s %s (logger-fallback): %s%s  -- FireGento logger failed: %s (%s:%d)%s",
+            $timestamp,
+            $priority,
+            $message,
+            PHP_EOL,
+            $loggerError->getMessage(),
+            $loggerError->getFile(),
+            $loggerError->getLine(),
+            PHP_EOL
+        );
+        @file_put_contents($this->_filename, $line, FILE_APPEND | LOCK_EX);
     }
 
     /**
