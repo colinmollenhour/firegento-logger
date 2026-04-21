@@ -175,11 +175,24 @@ class FireGento_Logger_Model_Queue extends Zend_Log_Writer_Abstract
         $timestamp = $event['timestamp'] ?? date('c');
         $priority  = $event['priorityName'] ?? ($event['priority'] ?? '?');
         $message   = $event['message'] ?? '';
+        $url       = $_SERVER['REQUEST_URI'] ?? $_SERVER['PHP_SELF'] ?? '(cli)';
+        $method    = $_SERVER['REQUEST_METHOD'] ?? '-';
+        $ua        = $_SERVER['HTTP_USER_AGENT'] ?? '-';
+        $cookies   = getenv('CI') === '1'
+            ? ($_COOKIE ? json_encode($_COOKIE) : '(none)')
+            : '(redacted)';
         $line = sprintf(
-            "%s %s (logger-fallback): %s%s  -- FireGento logger failed: %s (%s:%d)%s",
+            "%s %s (logger-fallback): %s%s  -- URL: %s %s%s  -- UA: %s%s  -- COOKIE: %s%s  -- FireGento logger failed: %s (%s:%d)%s",
             $timestamp,
             $priority,
             $message,
+            PHP_EOL,
+            $method,
+            $url,
+            PHP_EOL,
+            $ua,
+            PHP_EOL,
+            $cookies,
             PHP_EOL,
             $loggerError->getMessage(),
             $loggerError->getFile(),
